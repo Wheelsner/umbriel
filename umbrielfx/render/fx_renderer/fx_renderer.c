@@ -247,8 +247,14 @@ struct wlr_render_pass *fx_renderer_begin_output_buffer_pass(
 		fx_offscreen_buffers_invalidate_blend(output);
 	}
 
-	return begin_buffer_pass_with_output(output->renderer, buffer, options,
+	struct wlr_render_pass *pass = begin_buffer_pass_with_output(output->renderer, buffer, options,
 		output_buffers);
+	// Outputs without a DRM syncobj timeline (headless and virtual outputs)
+	// are marked so submit orders reads after render for capture clients.
+	if (pass != NULL && options->signal_timeline == NULL) {
+		fx_get_render_pass(pass)->implicit_sync_target = true;
+	}
+	return pass;
 }
 
 GLuint fx_renderer_get_buffer_fbo(struct wlr_renderer *wlr_renderer,
