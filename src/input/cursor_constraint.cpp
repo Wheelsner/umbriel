@@ -1,5 +1,6 @@
 #include "input/cursor.h"
 #include "input/seat.h"
+#include "layer/layer_surface.h"
 #include "server/server.h"
 #include "view/view.h"
 #include "wlr.h"
@@ -63,8 +64,12 @@ namespace umbriel {
     if (m_activeConstraint == nullptr || m_activeConstraint->surface == nullptr) {
       return false;
     }
+    wlr_surface* root = wlr_surface_get_root_surface(m_activeConstraint->surface);
+    if (const LayerSurface* layer = LayerSurface::fromSurface(root)) {
+      return layer->mapped();
+    }
     // The view owning the constrained surface, whichever shell role it has.
-    const View* view = View::fromSurface(wlr_surface_get_root_surface(m_activeConstraint->surface));
+    const View* view = View::fromSurface(root);
     if (view == nullptr) {
       return false;
     }
