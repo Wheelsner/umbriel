@@ -3946,19 +3946,22 @@ static void scene_entry_render(struct render_list_entry* entry, const struct ren
       mask_transform = wlr_output_transform_invert(mask->transform);
       mask_transform = wlr_output_transform_compose(mask_transform, data->transform);
       mask_src_box = mask->src_box;
-      if (tex != NULL && wlr_fbox_empty(&mask_src_box)) {
+      if (tex != NULL) {
         int mask_x = 0;
         int mask_y = 0;
         wlr_scene_node_coords(&mask->node, &mask_x, &mask_y);
         const int mask_w = mask->dst_width > 0 ? mask->dst_width : (int)tex->width;
         const int mask_h = mask->dst_height > 0 ? mask->dst_height : (int)tex->height;
-        if ((mask_x != x || mask_y != y || mask_w != blur->width || mask_h != blur->height)
+        if ((mask_x != entry->x || mask_y != entry->y || mask_w != blur->width || mask_h != blur->height)
             && mask_w > 0 && mask_h > 0) {
-          const double scale_x = (double)tex->width / (double)mask_w;
-          const double scale_y = (double)tex->height / (double)mask_h;
+          const struct wlr_fbox base_src = wlr_fbox_empty(&mask_src_box)
+              ? (struct wlr_fbox){0, 0, (double)tex->width, (double)tex->height}
+              : mask_src_box;
+          const double scale_x = base_src.width / (double)mask_w;
+          const double scale_y = base_src.height / (double)mask_h;
           mask_src_box = (struct wlr_fbox){
-              .x = (double)(x - mask_x) * scale_x,
-              .y = (double)(y - mask_y) * scale_y,
+              .x = base_src.x + (double)(entry->x - mask_x) * scale_x,
+              .y = base_src.y + (double)(entry->y - mask_y) * scale_y,
               .width = (double)blur->width * scale_x,
               .height = (double)blur->height * scale_y,
           };
