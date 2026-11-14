@@ -6,7 +6,9 @@
 #include "view/view.h"
 #include "wlr.h"
 
+#include <algorithm>
 #include <cassert>
+#include <ranges>
 
 namespace umbriel {
 
@@ -21,6 +23,7 @@ namespace umbriel {
       wlr_scene_xdg_surface_create(captureTree, m_popup->base);
     }
 
+    watchSurfaceTree(m_popup->base->surface);
     m_commit.notify = onCommit;
     wl_signal_add(&m_popup->base->surface->events.commit, &m_commit);
     m_reposition.notify = onReposition;
@@ -36,6 +39,7 @@ namespace umbriel {
   }
 
   Popup::~Popup() {
+    clearSurfaceWatches();
     if (m_commit.link.next != nullptr) {
       wl_list_remove(&m_commit.link);
       wl_list_remove(&m_reposition.link);
@@ -77,7 +81,103 @@ namespace umbriel {
     self->handleDestroy();
   }
 
-  void Popup::handleCommit() {
+  void Popup::onSurfaceCommit(wl_listener* listener, void* /*data*/) {
+    PopupSurfaceWatch* watch = wl_container_of(listener, watch, commit); // NOLINT(modernize-use-auto)
+    if (watch->subsurface != nullptr) {
+      watch->popup->updateBlur();
+    }
+  }
+
+  void Popup::onSurfaceNewSubsurface(wl_listener* listener, void* data) {
+    PopupSurfaceWatch* watch = wl_container_of(listener, watch, newSubsurface); // NOLINT(modernize-use-auto)
+    auto* subsurface = static_cast<wlr_subsurface*>(data);
+    watch->popup->watchSurfaceTree(subsurface->surface, subsurface);
+    watch->popup->updateBlur();
+  }
+
+  void Popup::onSubsurfaceDestroy(wl_listener* listener, void* /*data*/) {
+    PopupSurfaceWatch* watch = wl_container_of(listener, watch, subsurfaceDestroy); // NOLINT(modernize-use-auto)
+    watch->subsurface = nullptr;
+    wl_list_remove(&watch->subsurfaceDestroy.link);
+    watch->popup->updateBlur();
+  }
+
+  void Popup::onSurfaceDestroy(wl_listener* listener, void* /*data*/) {
+    PopupSurfaceWatch* watch = wl_container_of(listener, watch, destroy); // NOLINT(modernize-use-auto)
+    Popup* popup = watch->popup;
+    wl_list_remove(&watch->commit.link);
+    wl_list_remove(&watch->newSubsurface.link);
+    if (watch->subsurface != nullptr) {
+      wl_list_remove(&watch->subsurfaceDestroy.link);
+    }
+    wl_list_remove(&watch->destroy.link);
+    std::erase_if(popup->m_surfaceWatches, [watch](const auto& candidate) { return candidate.get() == watch; });
+  }
+
+  void Popup::watchSurfaceTree(wlr_surface* root, wlr_subsurface* attachment) {
+    if (root == nullptr) {
+      return;
+    }
+    watchSurface(root, attachment);
+
+    wlr_subsurface* child;
+    wl_list_for_each(child, &root->current.subsurfaces_below, current.link) {
+      watchSurfaceTree(child->surface, child);
+    }
+    wl_list_for_each(child, &root->current.subsurfaces_above, current.link) {
+      watchSurfaceTree(child->surface, child);
+    }
+  }
+
+  void Popup::watchSurface(wlr_surface* surface, wlr_subsurface* attachment) {
+    if (surface == nullptr) {
+      return;
+    }
+    const auto existing =
+        std::ranges::find_if(m_surfaceWatches, [surface](const auto& watch) { return watch->surface == surface; });
+    if (existing != m_surfaceWatches.end()) {
+      PopupSurfaceWatch& watch = **existing;
+      if (watch.subsurface == nullptr && attachment != nullptr) {
+        watch.subsurface = attachment;
+        watch.subsurfaceDestroy.notify = onSubsurfaceDestroy;
+        wl_signal_add(&attachment->events.destroy, &watch.subsurfaceDestroy);
+      }
+      return;
+    }
+
+    auto watch = std::make_unique<PopupSurfaceWatch>();
+    watch->popup = this;
+    watch->surface = surface;
+    watch->subsurface = attachment;
+    watch->commit.notify = onSurfaceCommit;
+    wl_signal_add(&surface->events.commit, &watch->commit);
+    watch->newSubsurface.notify = onSurfaceNewSubsurface;
+    wl_signal_add(&surface->events.new_subsurface, &watch->newSubsurface);
+    if (watch->subsurface != nullptr) {
+      watch->subsurfaceDestroy.notify = onSubsurfaceDestroy;
+      wl_signal_add(&watch->subsurface->events.destroy, &watch->subsurfaceDestroy);
+    }
+    watch->destroy.notify = onSurfaceDestroy;
+    wl_signal_add(&surface->events.destroy, &watch->destroy);
+    m_surfaceWatches.push_back(std::move(watch));
+  }
+
+  void Popup::clearSurfaceWatches() {
+    for (const auto& watch : m_surfaceWatches) {
+      wl_list_remove(&watch->commit.link);
+      wl_list_remove(&watch->newSubsurface.link);
+      if (watch->subsurface != nullptr) {
+        wl_list_remove(&watch->subsurfaceDestroy.link);
+      }
+      wl_list_remove(&watch->destroy.link);
+    }
+    m_surfaceWatches.clear();
+  }
+
+  void Popup::updateBlur() {
+    if (m_popup == nullptr || m_popup->base == nullptr || m_popup->base->data == nullptr) {
+      return;
+    }
     const wlr_box& geometry = m_popup->base->geometry;
     SurfaceBlurOptions blurOptions;
     if (LayerSurface* layer = LayerSurface::fromSurface(m_popup->parent)) {
@@ -89,6 +189,10 @@ namespace umbriel {
         static_cast<wlr_scene_tree*>(m_popup->base->data), m_popup->base->surface,
         wlr_box{0, 0, geometry.width, geometry.height}, geometry, corner_radii_none(), nullptr, blurOptions
     );
+  }
+
+  void Popup::handleCommit() {
+    updateBlur();
     if (!m_popup->base->initial_commit) {
       return;
     }
@@ -150,6 +254,7 @@ namespace umbriel {
   }
 
   void Popup::handleDestroy() {
+    clearSurfaceWatches();
     wl_list_remove(&m_commit.link);
     wl_list_remove(&m_reposition.link);
     wl_list_remove(&m_configure.link);

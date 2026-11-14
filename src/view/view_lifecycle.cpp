@@ -175,6 +175,9 @@ namespace umbriel {
     ViewSurfaceWatch* watch;
     watch = wl_container_of(listener, watch, commit);
     watch->view->syncContentType(watch->surface);
+    if (watch->subsurface != nullptr && watch->view->m_mapped) {
+      watch->view->updateBlur();
+    }
   }
 
   void View::onViewSurfaceNewSubsurface(wl_listener* listener, void* data) {

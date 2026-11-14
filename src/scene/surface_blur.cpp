@@ -11,21 +11,34 @@ namespace umbriel {
 
   namespace {
 
-    wlr_scene_buffer* findSurfaceBuffer(wlr_scene_node& root, wlr_surface* surface) {
+    wlr_scene_buffer* findSurfaceBuffer(wlr_scene_node& root, wlr_surface* surface, const wlr_box& surfaceBox) {
       struct Lookup {
         wlr_surface* surface;
+        wlr_box surfaceBox;
         wlr_scene_buffer* buffer = nullptr;
-      } lookup{surface};
+      } lookup{surface, surfaceBox};
 
       wlr_scene_node_for_each_buffer(
           &root,
           [](wlr_scene_buffer* buffer, int /*sx*/, int /*sy*/, void* data) {
             auto* lookup = static_cast<Lookup*>(data);
-            if (lookup->buffer != nullptr) {
+            wlr_scene_surface* sceneSurface = wlr_scene_surface_try_from_buffer(buffer);
+            if (sceneSurface == nullptr
+                || wlr_surface_get_root_surface(sceneSurface->surface) != lookup->surface) {
               return;
             }
-            wlr_scene_surface* sceneSurface = wlr_scene_surface_try_from_buffer(buffer);
-            if (sceneSurface != nullptr && sceneSurface->surface == lookup->surface) {
+            if (sceneSurface->surface == lookup->surface) {
+              if (lookup->buffer == nullptr) {
+                lookup->buffer = buffer;
+              }
+              return;
+            }
+            if (buffer->buffer == nullptr) {
+              return;
+            }
+            const int w = buffer->dst_width > 0 ? buffer->dst_width : sceneSurface->surface->current.width;
+            const int h = buffer->dst_height > 0 ? buffer->dst_height : sceneSurface->surface->current.height;
+            if (w >= lookup->surfaceBox.width && h >= lookup->surfaceBox.height) {
               lookup->buffer = buffer;
             }
           },
@@ -87,14 +100,10 @@ namespace umbriel {
     }
 
     wlr_scene_buffer* currentMask = wlr_scene_blur_get_transparency_mask_source(m_node);
-    if (maskSource != nullptr) {
-      if (currentMask != maskSource) {
-        wlr_scene_blur_set_transparency_mask_source(m_node, maskSource);
-      }
-    } else if (currentMask == nullptr) {
-      if (wlr_scene_buffer* mask = findSurfaceBuffer(parent->node, surface)) {
-        wlr_scene_blur_set_transparency_mask_source(m_node, mask);
-      }
+    wlr_scene_buffer* targetMask =
+        maskSource != nullptr ? maskSource : findSurfaceBuffer(parent->node, surface, surfaceBox);
+    if (targetMask != nullptr && currentMask != targetMask) {
+      wlr_scene_blur_set_transparency_mask_source(m_node, targetMask);
     }
 
     if (m_node->ignore_alpha != options.ignoreAlpha) {
